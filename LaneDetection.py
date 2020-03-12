@@ -18,11 +18,12 @@ class LaneDetection:
     cropLineY = 0
 
     frame = np.array([])
+    laneMask = np.array([])
 
-    yellowHSVLowBound = np.array([10, 700, 162])
+    yellowHSVLowBound = np.array([10, 70, 200])
     yellowHSVUpperBound = np.array([65, 180, 255])
 
-    whiteHSVLowBound = np.array([0, 0, 200])
+    whiteHSVLowBound = np.array([0, 0, 190])
     whiteHSVUpperBound = np.array([170, 25, 255])
 
 
@@ -66,12 +67,12 @@ class LaneDetection:
         yellowMask = cv2.inRange(hsvFrame, self.yellowHSVLowBound, self.yellowHSVUpperBound) 
         whiteMask = cv2.inRange(hsvFrame, self.whiteHSVLowBound, self.whiteHSVUpperBound)
 
-        laneMask = yellowMask | whiteMask
+        self.laneMask = yellowMask | whiteMask
 
-        lines = cv2.HoughLinesP(laneMask, 1, np.pi / 180, 50)
+        lines = cv2.HoughLinesP(self.laneMask, 1, np.pi / 180, 50)
 
         lineParams = []
-        if (lines.all() != None):
+        if (lines is not None and len(lines) > 1):
             for i in range(0, len(lines)):
                 for x1,y1,x2,y2 in lines[i]:
 
@@ -80,11 +81,15 @@ class LaneDetection:
                     if (y2 != y1 and x2 != x1):
                         m = (y2-y1) / (x2-x1)
                         b = y1 - m*x1
-                        lineParams.append([m,b])
+                        if (np.isnan(m) == False and np.isnan(b) == False):
+                            lineParams.append([m,b])
                     else:
                         continue              
 
         lineParams = np.array(lineParams)    
+
+        if (len(lineParams) <= 1):
+            return lineParams
 
         # Define criteria = ( type, max_iter = 10 , epsilon = 1.0 )
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
@@ -95,7 +100,6 @@ class LaneDetection:
         # Apply KMeans
         lineParams = np.float32(lineParams)
         _, _, centers = cv2.kmeans(lineParams, 2, None, criteria, 10, flags)
-        print(centers)
 
         m1 = centers[0,0]
         m2 = centers[1,0]
@@ -113,14 +117,17 @@ class LaneDetection:
     @param      
     @return     
     '''
-    def visualization(self, laneParms):
+    def visualization(self, laneParams):
+        if (len(laneParams) <= 1):
+            return self.frame
+
         h = self.frame.shape[0]
         w = self.frame.shape[1]
 
-        m1 = laneParms[0,0]
-        m2 = laneParms[1,0]
-        b1 = laneParms[0,1]
-        b2 = laneParms[1,1]
+        m1 = laneParams[0,0]
+        m2 = laneParams[1,0]
+        b1 = laneParams[0,1]
+        b2 = laneParams[1,1]
 
         y1 = h
         y2 = self.cropLineY
@@ -165,13 +172,15 @@ class LaneDetection:
                     cv2.FONT_HERSHEY_SIMPLEX, 1, \
                     color=(0,0,255), thickness=3)
 
-        '''
-        scale = 1000 / w  # percent of original size
-        dim = (int(w * scale), int(h * scale))
         
+        '''scale = 1000 / w  # percent of original size
+        dim = (int(w * scale), int(h * scale))
+        dimCropped = (int(self.laneMask.shape[1] * scale), int(self.laneMask.shape[0] * scale))
+
         cv2.imshow("Frame", cv2.resize(outputFrame, dim))
-        cv2.waitKey(0)
-        '''
+        cv2.imshow("Mask", cv2.resize(self.laneMask, dimCropped))
+        cv2.waitKey(0)'''
+        
 
         return outputFrame
 
@@ -190,7 +199,7 @@ class LaneDetection:
         if (saveVideo == True):
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             # 720p 30fps video
-            out = cv2.VideoWriter('CubeOverlayOutput.mp4', fourcc, 30, (1280, 720))
+            out = cv2.VideoWriter('LaneDetectionOutput.mp4', fourcc, 30, (1280, 720))
 
         # Continue to process frames if the video stream object is open
         while(videoCapture.isOpened()):
@@ -202,6 +211,8 @@ class LaneDetection:
                 preparedFrame = laneDetector.prepareImage(frame)
                 laneParams = laneDetector.getLaneLines(preparedFrame)
                 outputFrame = laneDetector.visualization(laneParams)
+
+                #cv2.imwrite('sampleLane2.png', frame)
 
                 # Save video if desired, resizing frame to 720p
                 if (saveVideo == True):
@@ -229,6 +240,7 @@ class LaneDetection:
 
 
 if __name__ == '__main__':
+    
     K = np.array([[9.037596e+02, 0.000000e+00, 6.957519e+02],
                    [0.000000e+00, 9.019653e+02, 2.242509e+02],
                    [0.000000e+00, 0.000000e+00, 1.000000e+00]])
@@ -247,13 +259,20 @@ if __name__ == '__main__':
     cropFactor = 0.5
 
     # Select video file
-    videoFile = 'sample_videos/multipleTags.mp4'
+    videoFile = 'sample_data1/video1.mp4'
 
     # Choose whether or not to save the output video
-    saveVideo = False
+    saveVideo = True
 
     # Run application
     laneDetector = LaneDetection(K, distortionCoeffs, cropFactor)
     laneDetector.runApplication(videoFile, saveVideo)
 
+    
+    '''frame = cv2.imread('sampleLane.png')
+    preparedFrame = laneDetector.prepareImage(frame)
+    laneParams = laneDetector.getLaneLines(preparedFrame)
+    outputFrame = laneDetector.visualization(laneParams)'''
+    
+    
 
