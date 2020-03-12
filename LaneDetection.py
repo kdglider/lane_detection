@@ -13,25 +13,17 @@ import cv2
 class LaneDetection:
     K = np.array([])
     distortionCoeffs = np.array([])
+
     cropFactor = 0
+    cropLineY = 0
+
+    frame = np.array([])
 
     yellowHSVLowBound = np.array([10, 700, 162])
     yellowHSVUpperBound = np.array([65, 180, 255])
 
     whiteHSVLowBound = np.array([0, 0, 200])
     whiteHSVUpperBound = np.array([170, 25, 255])
-
-    srcCorners = np.array([[480, 350],
-                           [810, 350],
-                           [230, 512],
-                           [935, 512]])
-    
-    dstCorners = np.array([[0, 0],
-                           [700, 0],
-                           [0, 700],
-                           [700, 700]])
-    
-    H, _ = cv2.findHomography(srcCorners, dstCorners)
 
 
     def __init__(self, K, distortionCoeffs, cropFactor):
@@ -41,88 +33,59 @@ class LaneDetection:
 
 
     '''
-    @brief      Undistort an image, crop to ROI and remove noise
+    @brief      Undistort an image, remove noise and crop to ROI
     @param      
     @return     
     '''
     def prepareImage(self, frame):
         h = frame.shape[0]
         w = frame.shape[1]
-        
-        srcCorners = np.array([[int(w/2)-1, 0],
-                           [int(w/2)+1, 0],
-                           [0, h],
-                           [w, h]])
-    
-        dstCorners = np.array([[0, 0],
-                           [w, 0],
-                           [0, h],
-                           [w, h]])
 
-        H, _ = cv2.findHomography(srcCorners, dstCorners)
-
-        newK, roi = cv2.getOptimalNewCameraMatrix(self.K, self.distortionCoeffs, \
+        newK, _ = cv2.getOptimalNewCameraMatrix(self.K, self.distortionCoeffs, \
                                                  (w, h), 0, (w, h))
         undistortedFrame = cv2.undistort(frame, self.K, self.distortionCoeffs, None, newK)
         
-        cropLineY = int(self.cropFactor*h)
-        croppedFrame = undistortedFrame[cropLineY:h, :, :]
+        self.frame = undistortedFrame
 
-        #warppedFrame = cv2.warpPerspective(croppedFrame, H, (croppedFrame.shape[1], croppedFrame.shape[0]))
+        blurredFrame = cv2.GaussianBlur(undistortedFrame, (5,5), 0)
+
+        self.cropLineY = int(self.cropFactor*h)
+        croppedFrame = blurredFrame[self.cropLineY:h, :, :]
         
-        hsvFrame = cv2.cvtColor(croppedFrame, cv2.COLOR_BGR2HSV)
+        return croppedFrame
+
+
+    '''
+    @brief      Determine the lane line equations from a frame
+    @param      
+    @return     
+    '''
+    def getLaneLines(self, frame):
+        hsvFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
         yellowMask = cv2.inRange(hsvFrame, self.yellowHSVLowBound, self.yellowHSVUpperBound) 
         whiteMask = cv2.inRange(hsvFrame, self.whiteHSVLowBound, self.whiteHSVUpperBound)
 
         laneMask = yellowMask | whiteMask
 
-        #edges = cv2.Canny(laneMask,50,150)
-
         lines = cv2.HoughLinesP(laneMask, 1, np.pi / 180, 50)
-        print(lines)
-
-        #print(lines)
 
         lineParams = []
-
         if (lines.all() != None):
             for i in range(0, len(lines)):
                 for x1,y1,x2,y2 in lines[i]:
+
+                    #cv2.line(undistortedFrame,(x1,y1+cropLineY),(x2,y2+cropLineY),(0,0,255),2)
                     
-                    #lineParams.append([rho, theta])
-
-
-                    
-                    cv2.line(undistortedFrame,(x1,y1+cropLineY),(x2,y2+cropLineY),(0,0,255),2)
-
-                    lineLength = np.sqrt((x1-x2)**2 + (y1-y2)**2)
-
                     if (y2 != y1 and x2 != x1):
                         m = (y2-y1) / (x2-x1)
                         b = y1 - m*x1
-
-                        if (m == 0):
-                            print(x1)
-                            print(x2)
-                            print(y1)
-                            print(y2)
-
                         lineParams.append([m,b])
                     else:
-                        continue
-                    
-                    if (y2 > y1):
-                        m = (y2-y1) / (x2-x1)
-                    elif (y2 < y1):
-                        m = (y1-y2) / (x1-x2)
-                    else:
-                        continue
-                    
+                        continue              
 
-        lineParams = np.array(lineParams)
-        print(lineParams)           
-        
+        lineParams = np.array(lineParams)    
+
         # Define criteria = ( type, max_iter = 10 , epsilon = 1.0 )
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
 
@@ -131,74 +94,86 @@ class LaneDetection:
 
         # Apply KMeans
         lineParams = np.float32(lineParams)
-        compactness,labels,centers = cv2.kmeans(lineParams, 2, None, criteria, 10, flags)
+        _, _, centers = cv2.kmeans(lineParams, 2, None, criteria, 10, flags)
         print(centers)
 
         m1 = centers[0,0]
         m2 = centers[1,0]
-        b1 = centers[0,1]
-        b2 = centers[1,1]
+        b1 = centers[0,1] + self.cropLineY
+        b2 = centers[1,1] + self.cropLineY
 
-        print(m1)
-        print(m2)
-        print(b1)
-        print(b2)
+        laneParams = np.array([[m1, b1],
+                               [m2, b2]])
+        
+        return laneParams
 
-        x1 = int((h - b1) / m1)
-        x2 = int((cropLineY - b1) / m1)
-        x3 = int((h - b2) / m2)
-        x4 = int((cropLineY - b2) / m2)
 
-        cv2.line(undistortedFrame,(x1,h),(x2,cropLineY), color=(0,255,0), thickness=3)
-        cv2.line(undistortedFrame,(x3,h),(x4,cropLineY), color=(0,255,0), thickness=3)
+    '''
+    @brief      Display the lane lines, lane mesh and drivetrajectory angle on the frame
+    @param      
+    @return     
+    '''
+    def visualization(self, laneParms):
+        h = self.frame.shape[0]
+        w = self.frame.shape[1]
 
+        m1 = laneParms[0,0]
+        m2 = laneParms[1,0]
+        b1 = laneParms[0,1]
+        b2 = laneParms[1,1]
+
+        y1 = h
+        y2 = self.cropLineY
+        y3 = h
+        y4 = self.cropLineY
+
+        x1 = int((y1 - b1) / m1)
+        x2 = int((y2 - b1) / m1)
+        x3 = int((y3 - b2) / m2)
+        x4 = int((y4 - b2) / m2)
+
+        outputFrame = self.frame.copy()
+
+        # Draw lane lines
+        cv2.line(outputFrame, (x1,y1), (x2,y2), color=(0,255,0), thickness=3)
+        cv2.line(outputFrame, (x3,y3), (x4,y4), color=(0,255,0), thickness=3)
+
+        # Create a translucent mesh over the lane
+        overlay = outputFrame.copy()
+        laneMesh = np.array([[x1,y1], [x2,y2], [x4,y4], [x3,y3]])
+
+        cv2.fillPoly(overlay, [laneMesh], color=(0, 0, 255))
+        cv2.addWeighted(src1=overlay, alpha=0.5, \
+                        src2=outputFrame, beta=0.5, \
+                        dst=outputFrame, gamma=0)
+        
+        # Calculate the centerline angle and display the driving trajectory
+        laneAngle1 = np.degrees(np.arctan(m1))
+        laneAngle2 = np.degrees(np.arctan(m2))
+        if (laneAngle1 < 0):
+            laneAngle1 = laneAngle1 + 180
+        if (laneAngle2 < 0):
+            laneAngle2 = laneAngle2 + 180
+
+        centerlineAngle = (laneAngle1 + laneAngle2) / 2
+        
+        textOverlay = 'Drive Trajectory: ' \
+                    + str(round(centerlineAngle - 90)) \
+                    + ' degrees from center'
+
+        cv2.putText(outputFrame, textOverlay, (10,30), \
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, \
+                    color=(0,0,255), thickness=3)
+
+        '''
         scale = 1000 / w  # percent of original size
         dim = (int(w * scale), int(h * scale))
-        dimCropped = (int(laneMask.shape[1] * scale), int(laneMask.shape[0] * scale))
-
-        cv2.imshow("Frame", cv2.resize(undistortedFrame, dim))
-        #cv2.imshow("warp", cv2.resize(warppedFrame, dim))
-        cv2.imshow("Frame Undist", cv2.resize(laneMask, dimCropped))
+        
+        cv2.imshow("Frame", cv2.resize(outputFrame, dim))
         cv2.waitKey(0)
+        '''
 
-        return
-
-
-    '''
-    @brief      Warp image to top view of the road and perform edge detection
-    @param      
-    @return     
-    '''
-    def detectEdges():
-        pass
-
-
-    '''
-    @brief      Identify line candidates using histogram peak detection
-    @param      
-    @return     
-    '''
-    def getLineCandidates():
-        pass
-
-
-    '''
-    @brief      Fit polynomials to the lane candidate pixels, calculate centerline and  
-                radius of curvature
-    @param      
-    @return     
-    '''
-    def getLanePolynomials():
-        pass
-
-
-    '''
-    @brief      Display the lane lines, lane mesh and radius of curvature on the original frame
-    @param      
-    @return     
-    '''
-    def visualization():
-        pass
+        return outputFrame
 
 
     '''
@@ -206,8 +181,50 @@ class LaneDetection:
     @param      
     @return     
     '''
-    def runApplication():
-        pass
+    def runApplication(self, videoFile, saveVideo=False):
+        # Create video stream object
+        videoCapture = cv2.VideoCapture(videoFile)
+        # videoCapture.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+        
+        # Define video codec and output file if video needs to be saved
+        if (saveVideo == True):
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # 720p 30fps video
+            out = cv2.VideoWriter('CubeOverlayOutput.mp4', fourcc, 30, (1280, 720))
+
+        # Continue to process frames if the video stream object is open
+        while(videoCapture.isOpened()):
+            ret, frame = videoCapture.read()
+
+            # Continue processing if a valid frame is received
+            if ret == True:
+                # Detect and visualize lanes
+                preparedFrame = laneDetector.prepareImage(frame)
+                laneParams = laneDetector.getLaneLines(preparedFrame)
+                outputFrame = laneDetector.visualization(laneParams)
+
+                # Save video if desired, resizing frame to 720p
+                if (saveVideo == True):
+                    out.write(cv2.resize(outputFrame, (1280, 720)))
+                
+                # Display frame to the screen in a video preview
+                cv2.imshow("Frame", cv2.resize(outputFrame, (1280, 720)))
+
+                # Exit if the user presses 'q'
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            
+            # If the end of the video is reached, wait for final user keypress and exit
+            else:
+                cv2.waitKey(0)
+                break
+        
+        # Release video and file object handles
+        videoCapture.release()
+        if (saveVideo == True):
+            out.release()
+        
+        print('Video and file handles closed')
 
 
 
@@ -226,13 +243,17 @@ if __name__ == '__main__':
     distortionCoeffs = np.array([-2.42565104e-01, -4.77893070e-02, -1.31388084e-03, -8.79107779e-05, 2.20573263e-02])
     '''
 
+    # How much to crop a frame from the top to isolate the road
     cropFactor = 0.5
+
+    # Select video file
+    videoFile = 'sample_videos/multipleTags.mp4'
+
+    # Choose whether or not to save the output video
+    saveVideo = False
+
+    # Run application
     laneDetector = LaneDetection(K, distortionCoeffs, cropFactor)
-
-    frame = cv2.imread('sampleLane.png')
-
-    
-    laneDetector.prepareImage(frame)
-
+    laneDetector.runApplication(videoFile, saveVideo)
 
 
